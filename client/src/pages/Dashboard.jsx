@@ -45,11 +45,45 @@ export default function Dashboard() {
   }, []);
 
   // Join note room when selectedNote changes
-  useEffect(() => {
-    if (selectedNote?._id && socket.current) {
-      socket.current.emit("join-note", selectedNote._id);
+ useEffect(() => {
+  if (selectedNote?._id && socket.current) {
+    socket.current.emit("join-note", selectedNote._id);
+    console.log("Joined note room:", selectedNote._id);
+  }
+}, [selectedNote?._id]);
+
+// --- Auto-refresh / polling every 5 seconds ---
+useEffect(() => {
+  const interval = setInterval(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    try {
+      const res = await axios.get(`${API_URL}/api/notes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setNotes(prevNotes => {
+        if (JSON.stringify(prevNotes) !== JSON.stringify(res.data)) return res.data;
+        return prevNotes;
+      });
+
+      // Update currently open note if changed
+      if (selectedNote?._id) {
+        const updated = res.data.find(n => n._id === selectedNote._id);
+        if (updated && updated.content !== selectedNote.content) {
+          setSelectedNote(updated);
+        }
+      }
+    } catch (err) {
+      console.error("Auto-refresh failed:", err);
     }
-  }, [selectedNote?._id]);
+  }, 5000); // every 5 seconds
+
+  return () => clearInterval(interval);
+}, [selectedNote?._id]);
+
+
 
   // --- Fetch user + notes ---
   useEffect(() => {
@@ -73,17 +107,26 @@ export default function Dashboard() {
 const fetchNotes = async (authToken, noteIdFromLink) => {
   try {
     setLoading(true);
+    
+    // Fetch all notes
     const res = await axios.get(`${API_URL}/api/notes`, {
       headers: { Authorization: `Bearer ${authToken}` },
     });
-
     setNotes(res.data);
 
-    // Open note if noteId exists in URL
-    if (noteIdFromLink) {
-      const noteToOpen = res.data.find((n) => n._id === noteIdFromLink);
-      if (noteToOpen) setSelectedNote(noteToOpen);
-    }
+   if (noteIdFromLink) {
+  let noteToOpen = res.data.find((n) => n._id === noteIdFromLink);
+  if (!noteToOpen) {
+    const singleRes = await axios.get(`${API_URL}/api/notes/${noteIdFromLink}`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    noteToOpen = singleRes.data;
+    setNotes((prev) => [noteToOpen, ...prev]);
+  }
+  setSelectedNote(noteToOpen);
+}
+
+
   } catch (err) {
     console.error(err);
     alert("Failed to fetch notes. Please login again.");
@@ -326,11 +369,12 @@ const fetchNotes = async (authToken, noteIdFromLink) => {
               </button>
               <button
                 onClick={() => {
-                  const shareLink = `${window.location.origin}/dashboard?noteId=${selectedNote._id}`;
-                  navigator.clipboard
-                    .writeText(shareLink)
-                    .then(() => alert("Share link copied! 📋"))
-                    .catch(() => alert("Failed to copy ❌"));
+                  const token = localStorage.getItem("token");
+const shareLink = `${window.location.origin}/dashboard?noteId=${selectedNote._id}&token=${token}`;
+navigator.clipboard.writeText(shareLink)
+  .then(() => alert("Share link copied! 📋"))
+  .catch(() => alert("Failed to copy ❌"));
+
                 }}
                 className="bg-gray-100 text-gray-800 px-3 py-2 rounded-lg hover:bg-gray-300 transition"
               >
