@@ -86,23 +86,38 @@ useEffect(() => {
 
 
   // --- Fetch user + notes ---
-  useEffect(() => {
-    const query = new URLSearchParams(window.location.search);
-    const token = query.get("token") || localStorage.getItem("token");
-    const name = query.get("name") || localStorage.getItem("name") || "Guest";
-    const email = query.get("email") || localStorage.getItem("email") || "guest@example.com";
-    const noteIdFromLink = query.get("noteId");
+useEffect(() => {
+  const query = new URLSearchParams(window.location.search);
+  const tokenFromUrl = query.get("token");
+  const noteIdFromLink = query.get("noteId");
+  const name = query.get("name") || localStorage.getItem("name") || "Guest";
+  const email = query.get("email") || localStorage.getItem("email") || "guest@example.com";
 
-    if (!token) return navigate("/");
+  const token = tokenFromUrl || localStorage.getItem("token");
 
-    localStorage.setItem("token", token);
-    localStorage.setItem("name", name);
-    localStorage.setItem("email", email);
-    window.history.replaceState({}, document.title, "/dashboard");
+  if (!token) return navigate("/"); // redirect if no token
 
-    setUser({ name, email });
-    fetchNotes(token, noteIdFromLink);
-  }, []);
+  setUser({ name, email });
+
+  // Fetch notes first using the token from URL or localStorage
+  fetchNotes(token, noteIdFromLink)
+    .then(() => {
+      // Save token & user info to localStorage AFTER fetch
+      localStorage.setItem("token", token);
+      localStorage.setItem("name", name);
+      localStorage.setItem("email", email);
+      // Remove query params only after fetch is done
+      window.history.replaceState({}, document.title, "/dashboard");
+    })
+    .catch((err) => {
+      console.error(err);
+      alert("Failed to load note. Please login again.");
+      localStorage.clear();
+      navigate("/");
+    });
+}, []);
+
+
 
 const fetchNotes = async (authToken, noteIdFromLink) => {
   try {
