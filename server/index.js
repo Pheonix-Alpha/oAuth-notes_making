@@ -3,7 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import session from "express-session";
 import aiRoutes from "./routes/aiRoutes.js";
-
+import http from "http";
+import { Server } from "socket.io";
 
 dotenv.config();
 import authRoutes from "./routes/auth.js";
@@ -14,6 +15,7 @@ import passport from "passport";
 
 import googleAuth from "./routes/googleAuth.js";
 import router from "./routes/note.js";
+
 
 
 
@@ -63,9 +65,47 @@ mongoose.connect(process.env.MONGO_URI, {
 .then(() => console.log("✅ MongoDB Connected"))
 .catch(err => console.error("❌ MongoDB Connection Error:", err));
 
+//  --- Create Http + Socket.io server --
+
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+     origin: [
+      "http://localhost:5173",
+      "https://smart-note-making.netlify.app",
+    ],
+    credentials: true,
+  }
+});
+
+
+// -- Real time collabroation //
+
+io.on("connection", (socket) => {
+  console.log(" user connected", socket.id);
+
+   socket.on("join-note", (noteId) => {
+    socket.join(noteId);
+    console.log(`User ${socket.id} joined note ${noteId}`);
+});
+socket.on("edit-note", ({ noteId, content }) => {
+    socket.to(noteId).emit("note-updated", content);
+  });
+
+  socket.on("disconnect", () => {
+    console.log("🔴 User disconnected:", socket.id);
+  });
+});
+
+
+
+
+
 
 const port = process.env.PORT || 5000;
 
-app.listen(port, () => {
-  console.log(`✅ Server listening at http://localhost:${port}`);
+server.listen(port, () => {
+  console.log(`🚀 Server + Socket.io running at http://localhost:${port}`);
 });
+

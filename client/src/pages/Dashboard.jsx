@@ -2,8 +2,9 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import logo from "../assets/icon.png";
 import axios from "axios";
-import { Share,X } from "lucide-react";
-
+import { Share, X } from "lucide-react";
+import { io } from "socket.io-client";
+import RichTextEditor from "./RichTextEditor.jsx";
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -12,67 +13,75 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [savingNotes, setSavingNotes] = useState({});
   const [selectedNote, setSelectedNote] = useState(null);
-  const [summary, setSummary] = useState(""); // stores AI summary
-  const [aiLoading, setAiLoading] = useState(false); // loading state
+  const [summary, setSummary] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
-  const API_URL = import.meta.env.VITE_BACKEND_URL;
-
-  const openFullNote = (note) => {
-    setSelectedNote(note);
-    setSummary(""); // clear old summary
-  };
-
-  const closeFullNote = () => setSelectedNote(null);
-
-  const handleTitleChange = (e) => {
-    const updated = { ...selectedNote, title: e.target.value };
-    setSelectedNote(updated);
-    handleUpdateNote(updated._id, updated);
-  };
-
-  const handleContentChange = (e) => {
-    const updated = { ...selectedNote, content: e.target.value };
-    setSelectedNote(updated);
-    handleUpdateNote(updated._id, updated);
-  };
-
-  // For debouncing updates
+  const API_URL = import.meta.env.VITE_BACKEND_URL.replace("/api", "");
   const updateTimeouts = useRef({});
+  const socket = useRef(null);
 
+  // --- Socket.io setup ---
+  useEffect(() => {
+    socket.current = io(API_URL, {
+      transports: ["websocket"],
+      withCredentials: true,
+    });
+
+    socket.current.on("connect", () => {
+      console.log("✅ Connected to Socket.io:", socket.current.id);
+    });
+
+    socket.current.on("note-updated", ({ noteId, content }) => {
+      // Update selected note if it matches
+      if (selectedNote?._id === noteId) {
+        setSelectedNote((prev) => (prev ? { ...prev, content } : prev));
+      }
+      setNotes((prev) =>
+        prev.map((n) => (n._id === noteId ? { ...n, content } : n))
+      );
+    });
+
+    return () => socket.current.disconnect();
+  }, []);
+
+  // Join note room when selectedNote changes
+  useEffect(() => {
+    if (selectedNote?._id && socket.current) {
+      socket.current.emit("join-note", selectedNote._id);
+    }
+  }, [selectedNote?._id]);
+
+  // --- Fetch user + notes ---
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
-    const tokenFromQuery = query.get("token");
-    const nameFromQuery = query.get("name");
-    const emailFromQuery = query.get("email");
+    const token = query.get("token") || localStorage.getItem("token");
+    const name = query.get("name") || localStorage.getItem("name") || "Guest";
+    const email = query.get("email") || localStorage.getItem("email") || "guest@example.com";
+    const noteIdFromLink = query.get("noteId");
 
-    let token = tokenFromQuery || localStorage.getItem("token");
-    let name = nameFromQuery || localStorage.getItem("name") || "Guest";
-    let email =
-      emailFromQuery || localStorage.getItem("email") || "guest@example.com";
+    if (!token) return navigate("/");
 
-    if (!token) {
-      navigate("/"); // redirect if no token
-      return;
-    }
-
-    if (tokenFromQuery && nameFromQuery && emailFromQuery) {
-      localStorage.setItem("token", token);
-      localStorage.setItem("name", name);
-      localStorage.setItem("email", email);
-      window.history.replaceState({}, document.title, "/dashboard");
-    }
+    localStorage.setItem("token", token);
+    localStorage.setItem("name", name);
+    localStorage.setItem("email", email);
+    window.history.replaceState({}, document.title, "/dashboard");
 
     setUser({ name, email });
-    fetchNotes(token);
-  }, [navigate]);
+    fetchNotes(token, noteIdFromLink);
+  }, []);
 
-  const fetchNotes = async (authToken) => {
+  const fetchNotes = async (authToken, noteIdFromLink) => {
     try {
       setLoading(true);
-      const res = await axios.get(`${API_URL}/notes`, {
+      const res = await axios.get(`${API_URL}/api/notes`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       setNotes(res.data);
+
+      if (noteIdFromLink) {
+        const note = res.data.find((n) => n._id === noteIdFromLink);
+        if (note) setSelectedNote(note);
+      }
     } catch (err) {
       console.error(err);
       alert("Failed to fetch notes. Please login again.");
@@ -83,18 +92,33 @@ export default function Dashboard() {
     }
   };
 
+  // --- Handlers ---
   const handleLogout = () => {
     localStorage.clear();
     navigate("/");
   };
 
+  const openFullNote = (note) => {
+    setSelectedNote(note);
+    setSummary("");
+  };
+
+  const closeFullNote = () => setSelectedNote(null);
+
+  const handleTitleChange = (e) => {
+    const updated = { ...selectedNote, title: e.target.value };
+    setSelectedNote(updated);
+    handleUpdateNote(updated._id, updated);
+  };
+
   const handleCreateNote = async () => {
     const authToken = localStorage.getItem("token");
     try {
-      const newNote = { title: "New Note", content: "Write something here..." };
-      const res = await axios.post(`${API_URL}/notes`, newNote, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await axios.post(
+        `${API_URL}/api/notes`,
+        { title: "New Note", content: "Write something here..." },
+        { headers: { Authorization: `Bearer ${authToken}` } }
+      );
       setNotes([res.data.note, ...notes]);
     } catch (err) {
       console.error(err);
@@ -105,12 +129,12 @@ export default function Dashboard() {
   const handleDeleteNote = async (id) => {
     const authToken = localStorage.getItem("token");
     try {
-      await axios.delete(`${API_URL}/notes/${id}`, {
+      await axios.delete(`${API_URL}/api/notes/${id}`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       setNotes(notes.filter((note) => note._id !== id));
-      // Clear any pending timeout for deleted note
       delete updateTimeouts.current[id];
+      if (selectedNote?._id === id) setSelectedNote(null);
     } catch (err) {
       console.error(err);
       alert("Failed to delete note.");
@@ -119,32 +143,38 @@ export default function Dashboard() {
 
   const handleUpdateNote = (id, updatedNote) => {
     if (updateTimeouts.current[id]) clearTimeout(updateTimeouts.current[id]);
-
     setSavingNotes((prev) => ({ ...prev, [id]: true }));
 
     updateTimeouts.current[id] = setTimeout(async () => {
       const authToken = localStorage.getItem("token");
       try {
-        await axios.put(`${API_URL}/notes/${id}`, updatedNote, {
+        const res = await axios.put(`${API_URL}/api/notes/${id}`, updatedNote, {
           headers: { Authorization: `Bearer ${authToken}` },
         });
+        const savedNote = res.data.note || updatedNote;
+
+        socket.current?.emit("edit-note", {
+          noteId: savedNote._id,
+          content: savedNote.content,
+        });
+
+        setNotes((prev) => prev.map((n) => (n._id === id ? savedNote : n)));
       } catch (err) {
         console.error(err);
         alert("Failed to update note.");
       } finally {
-        // Remove "saving..." indicator
         setSavingNotes((prev) => ({ ...prev, [id]: false }));
       }
-    }, 500); // wait 500ms after last keystroke
+    }, 500);
   };
 
   const handleSummarizeNote = async () => {
     if (!selectedNote?.content) return;
     setAiLoading(true);
     try {
-      const authToken = localStorage.getItem("token"); // optional if backend needs auth
+      const authToken = localStorage.getItem("token");
       const res = await axios.post(
-        `${API_URL}/ai/summarize`, // backend AI route
+        `${API_URL}/api/ai/summarize`,
         { text: selectedNote.content },
         { headers: { Authorization: `Bearer ${authToken}` } }
       );
@@ -156,6 +186,7 @@ export default function Dashboard() {
       setAiLoading(false);
     }
   };
+  
 
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
@@ -206,41 +237,45 @@ export default function Dashboard() {
                   onClick={() => openFullNote(note)}
                   className="cursor-pointer flex-1"
                 >
-                <div className="flex items-start justify-between mb-2">
-  <h3 className="font-bold text-gray-800 text-lg pr-2 truncate">{note.title}</h3>
+                  <div className="flex items-start justify-between mb-2">
+                    <h3 className="font-bold text-gray-800 text-lg pr-2 truncate">
+                      {note.title}
+                    </h3>
 
-  {/* Share button */}
+                    {/* Share button */}
 
-  <div className="">
-  <button
-    onClick={(e) => {
-      e.stopPropagation(); // Prevent opening full note
-      const textToCopy = `📝 *${note.title}*\n\n${note.content || ""}`;
-      navigator.clipboard
-        .writeText(textToCopy)
-        .then(() => alert("Note copied to clipboard 📋"))
-        .catch(() => alert("Failed to copy ❌"));
-    }}
-    className="bg-gray-100 text-gray-800 px-2 py-1 text-xs rounded-lg hover:bg-gray-300 transition"
-    title="Copy note to clipboard"
-  >
-    <Share size={14} className="text-gray-700" />
-  </button>
-  <button
-   onClick={(e) =>{e.stopPropagation();
-    handleDeleteNote(note._id);} }>
-    <X size={13} className="mx-1" />
-  </button>
-  </div>
-</div>
+                    <div className="">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevent opening full note
+                          const textToCopy = `📝 *${note.title}*\n\n${
+                            note.content || ""
+                          }`;
+                          navigator.clipboard
+                            .writeText(textToCopy)
+                            .then(() => alert("Note copied to clipboard 📋"))
+                            .catch(() => alert("Failed to copy ❌"));
+                        }}
+                        className="bg-gray-100 text-gray-800 px-2 py-1 text-xs rounded-lg hover:bg-gray-300 transition"
+                        title="Copy note to clipboard"
+                      >
+                        <Share size={14} className="text-gray-700" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteNote(note._id);
+                        }}
+                      >
+                        <X size={13} className="mx-1" />
+                      </button>
+                    </div>
+                  </div>
 
-<p className="text-gray-500 text-sm line-clamp-3">
-  {note.content || "No content yet..."}
-</p>
-
+                  <p className="text-gray-500 text-sm line-clamp-3">
+                    {note.content || "No content yet..."}
+                  </p>
                 </div>
-
-               
               </div>
             ))}
           </div>
@@ -263,12 +298,15 @@ export default function Dashboard() {
               className="text-2xl font-bold mb-4 w-full border-b border-gray-300 focus:outline-none"
               placeholder="Note Title"
             />
-            <textarea
-              value={selectedNote.content}
-              onChange={handleContentChange}
-              className="w-full flex-1 border border-gray-300 rounded-lg p-4 focus:outline-none resize-none"
-              placeholder="Start writing your note..."
+            <RichTextEditor
+              content={selectedNote.content}
+              onChange={(value) => {
+                const updated = { ...selectedNote, content: value };
+                setSelectedNote(updated);
+                handleUpdateNote(updated._id, updated);
+              }}
             />
+
             <div className="mt-4 flex items-center justify-between">
               <button
                 onClick={handleSummarizeNote}
@@ -278,11 +316,23 @@ export default function Dashboard() {
                 {aiLoading ? "Summarizing..." : "✨ Summarize Note"}
               </button>
               <button
-              onClick={() => handleDeleteNote(selectedNote._id)}
-              className=" self-end bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition"
-            >
-              Delete Note
-            </button>
+                onClick={() => handleDeleteNote(selectedNote._id)}
+                className=" self-end bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition"
+              >
+                Delete Note
+              </button>
+              <button
+                onClick={() => {
+                  const shareLink = `${window.location.origin}/dashboard?noteId=${selectedNote._id}`;
+                  navigator.clipboard
+                    .writeText(shareLink)
+                    .then(() => alert("Share link copied! 📋"))
+                    .catch(() => alert("Failed to copy ❌"));
+                }}
+                className="bg-gray-100 text-gray-800 px-3 py-2 rounded-lg hover:bg-gray-300 transition"
+              >
+                <Share size={16} className="text-gray-700" />
+              </button>
 
               {summary && (
                 <div className="mt-4 p-4 bg-gray-100 rounded-lg border border-gray-300">
@@ -295,7 +345,6 @@ export default function Dashboard() {
             {savingNotes[selectedNote._id] && (
               <p className="text-xs text-gray-400 italic mt-2">Saving...</p>
             )}
-            
           </div>
         </div>
       )}
