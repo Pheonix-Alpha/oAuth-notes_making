@@ -70,27 +70,30 @@ export default function Dashboard() {
     fetchNotes(token, noteIdFromLink);
   }, []);
 
-  const fetchNotes = async (authToken, noteIdFromLink) => {
-    try {
-      setLoading(true);
-      const res = await axios.get(`${API_URL}/api/notes`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      setNotes(res.data);
+const fetchNotes = async (authToken, noteIdFromLink) => {
+  try {
+    setLoading(true);
+    const res = await axios.get(`${API_URL}/api/notes`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
 
-      if (noteIdFromLink) {
-        const note = res.data.find((n) => n._id === noteIdFromLink);
-        if (note) setSelectedNote(note);
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Failed to fetch notes. Please login again.");
-      localStorage.clear();
-      navigate("/");
-    } finally {
-      setLoading(false);
+    setNotes(res.data);
+
+    // Open note if noteId exists in URL
+    if (noteIdFromLink) {
+      const noteToOpen = res.data.find((n) => n._id === noteIdFromLink);
+      if (noteToOpen) setSelectedNote(noteToOpen);
     }
-  };
+  } catch (err) {
+    console.error(err);
+    alert("Failed to fetch notes. Please login again.");
+    localStorage.clear();
+    navigate("/");
+  } finally {
+    setLoading(false);
+  }
+};
+
 
   // --- Handlers ---
   const handleLogout = () => {
